@@ -3,6 +3,7 @@ from flask_cors import CORS
 from ultralytics import YOLO
 import cv2
 import numpy as np
+import requests
 import os
 import time
 
@@ -12,18 +13,23 @@ import time
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-print("AGROW – YOLO Intrusion Detection Backend Started")
+print("AGROW – YOLO + Telegram Backend Started")
 
 # -------------------------
-# Load YOLO model (FASTEST)
+# Load YOLO
 # -------------------------
-model = YOLO("yolov8n.pt")   # nano model (best for Render)
-
+model = YOLO("yolov8n.pt")
 CONF_THRESHOLD = 0.5
 DETECT_CLASSES = ["person", "dog", "cat", "cow", "horse", "sheep"]
 
+# -------------------------
+# Telegram config
+# -------------------------
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
 last_alert_time = 0
-ALERT_COOLDOWN = 10   # seconds
+ALERT_COOLDOWN = 15  # seconds
 
 # -------------------------
 # Health check
@@ -32,6 +38,23 @@ ALERT_COOLDOWN = 10   # seconds
 def health():
     return jsonify({"status": "backend working"})
 
+# -------------------------
+# Send Telegram alert
+# -------------------------
+def send_telegram_alert(image, label, conf):
+    try:
+        _, img_encoded = cv2.imencode(".jpg", image)
+        files = {
+            "photo": ("intrusion.jpg", img_encoded.tobytes())
+        }
+        data = {
+            "chat_id": CHAT_ID,
+            "caption": f"🚨 AGROW ALERT\n\nIntrusion Detected\nObject: {label}\nConfidence: {conf}"
+        }
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        requests.post(url, files=files, data=data, timeout=10)
+    except Exception as e:
+        print("Telegram error:", e)
 
 # -------------------------
 # Detection route
@@ -40,79 +63,57 @@ def health():
 def detect_frame():
     global last_alert_time
 
-    try:
-        if "frame" not in request.files:
-            return jsonify({
-                "status": "No Frame Received",
-                "object": "—",
-                "confidence": "—"
-            })
+    if "frame" not in request.files:
+        return jsonify({"status": "No Frame", "object": "—", "confidence": "—"})
 
-        # Read image from request
-        file = request.files["frame"]
-        img_bytes = file.read()
-        np_img = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+    # Decode image
+    file = request.files["frame"]
+    img_bytes = file.read()
+    np_img = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
-        if img is None:
-            return jsonify({
-                "status": "Invalid Image",
-                "object": "—",
-                "confidence": "—"
-            })
+    if img is None:
+        return jsonify({"status": "Invalid Image", "object": "—", "confidence": "—"})
 
-        # Resize for speed
-        img = cv2.resize(img, (640, 640))
+    img = cv2.resize(img, (640, 640))
 
-        # YOLO inference
-        results = model(img, verbose=False)
+    # YOLO detection
+    results = model(img, verbose=False)
 
-        detected_object = None
-        detected_conf = 0
+    detected_object = None
+    detected_conf = 0
 
-        for r in results:
-            for box in r.boxes:
-                cls_id = int(box.cls[0])
-                label = model.names[cls_id]
-                conf = float(box.conf[0])
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            label = model.names[cls_id]
+            conf = float(box.conf[0])
 
-                if label in DETECT_CLASSES and conf >= CONF_THRESHOLD:
-                    detected_object = label
-                    detected_conf = round(conf, 2)
-                    break
+            if label in DETECT_CLASSES and conf >= CONF_THRESHOLD:
+                detected_object = label
+                detected_conf = round(conf, 2)
+                break
 
-        # If intrusion detected
-        if detected_object:
-            current_time = time.time()
+    if detected_object:
+        now = time.time()
+        if now - last_alert_time > ALERT_COOLDOWN:
+            last_alert_time = now
+            send_telegram_alert(img, detected_object, detected_conf)
 
-            if current_time - last_alert_time > ALERT_COOLDOWN:
-                last_alert_time = current_time
-                print(f"🚨 Intrusion detected: {detected_object} ({detected_conf})")
-
-            return jsonify({
-                "status": "Intrusion Detected",
-                "object": detected_object,
-                "confidence": detected_conf
-            })
-
-        # No intrusion
         return jsonify({
-            "status": "No Intrusion",
-            "object": "—",
-            "confidence": "—"
+            "status": "Intrusion Detected",
+            "object": detected_object,
+            "confidence": detected_conf
         })
 
-    except Exception as e:
-        print("Detection error:", e)
-        return jsonify({
-            "status": "Error",
-            "object": "—",
-            "confidence": "—"
-        }), 500
-
+    return jsonify({
+        "status": "No Intrusion",
+        "object": "—",
+        "confidence": "—"
+    })
 
 # -------------------------
-# Run app (Render compatible)
+# Run (Render compatible)
 # -------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
