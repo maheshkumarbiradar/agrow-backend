@@ -25,8 +25,8 @@ DETECT_CLASSES = ["person", "dog", "cat", "cow", "horse", "sheep"]
 # -------------------------
 # Telegram config
 # -------------------------
-BOT_TOKEN = os.environ.get("8518386034:AAFPLoH-TnvlJuls7Qf2WGWPJxWfJeo4UtY")
-CHAT_ID = os.environ.get("1517223648")
+BOT_TOKEN = "8518386034:AAFPLoH-TnvlJuls7Qf2WGWPJxWfJeo4UtY"
+CHAT_ID = "1517223648"
 
 last_alert_time = 0
 ALERT_COOLDOWN = 30  # seconds
@@ -118,5 +118,6 @@ def detect_frame():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
 
 
