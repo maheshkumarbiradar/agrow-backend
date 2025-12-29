@@ -1,19 +1,32 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from ultralytics import YOLO
+import cv2
+import numpy as np
 import os
+import time
 
 # -------------------------
 # App setup
 # -------------------------
 app = Flask(__name__)
-
-# 🔥 CORS FIX (MOST IMPORTANT LINE)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-print("AGROW – Intrusion Detection Backend Started")
+print("AGROW – YOLO Intrusion Detection Backend Started")
 
 # -------------------------
-# Health check route
+# Load YOLO model (FASTEST)
+# -------------------------
+model = YOLO("yolov8n.pt")   # nano model (best for Render)
+
+CONF_THRESHOLD = 0.5
+DETECT_CLASSES = ["person", "dog", "cat", "cow", "horse", "sheep"]
+
+last_alert_time = 0
+ALERT_COOLDOWN = 10   # seconds
+
+# -------------------------
+# Health check
 # -------------------------
 @app.route("/health", methods=["GET"])
 def health():
@@ -25,28 +38,72 @@ def health():
 # -------------------------
 @app.route("/detect/frame", methods=["POST"])
 def detect_frame():
+    global last_alert_time
+
     try:
-        # Check if frame exists
         if "frame" not in request.files:
             return jsonify({
                 "status": "No Frame Received",
                 "object": "—",
                 "confidence": "—"
-            }), 200
+            })
 
-        frame = request.files["frame"]
+        # Read image from request
+        file = request.files["frame"]
+        img_bytes = file.read()
+        np_img = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
-        # 🔴 TEMP LOGIC (YOLO CAN BE ADDED LATER)
-        # This confirms frontend ↔ backend works
+        if img is None:
+            return jsonify({
+                "status": "Invalid Image",
+                "object": "—",
+                "confidence": "—"
+            })
 
+        # Resize for speed
+        img = cv2.resize(img, (640, 640))
+
+        # YOLO inference
+        results = model(img, verbose=False)
+
+        detected_object = None
+        detected_conf = 0
+
+        for r in results:
+            for box in r.boxes:
+                cls_id = int(box.cls[0])
+                label = model.names[cls_id]
+                conf = float(box.conf[0])
+
+                if label in DETECT_CLASSES and conf >= CONF_THRESHOLD:
+                    detected_object = label
+                    detected_conf = round(conf, 2)
+                    break
+
+        # If intrusion detected
+        if detected_object:
+            current_time = time.time()
+
+            if current_time - last_alert_time > ALERT_COOLDOWN:
+                last_alert_time = current_time
+                print(f"🚨 Intrusion detected: {detected_object} ({detected_conf})")
+
+            return jsonify({
+                "status": "Intrusion Detected",
+                "object": detected_object,
+                "confidence": detected_conf
+            })
+
+        # No intrusion
         return jsonify({
-            "status": "Intrusion Detected",
-            "object": "person",
-            "confidence": 0.99
-        }), 200
+            "status": "No Intrusion",
+            "object": "—",
+            "confidence": "—"
+        })
 
     except Exception as e:
-        print("Error:", e)
+        print("Detection error:", e)
         return jsonify({
             "status": "Error",
             "object": "—",
